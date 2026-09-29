@@ -1,0 +1,12 @@
+# Ignore everything in the project root
+/*
+
+# ...except this file
+!/.gitignore
+
+# ...and Assets/Scripts (Git can't see inside an ignored folder,
+# so Assets is un-ignored first, then everything in it except Scripts is ignored again)
+!/Assets/
+/Assets/*
+!/Assets/Scripts/
+!/Assets/Scripts.meta
