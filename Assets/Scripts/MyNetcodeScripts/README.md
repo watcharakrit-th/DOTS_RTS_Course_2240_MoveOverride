@@ -5,8 +5,8 @@
 | File | What it does |
 |---|---|
 | `GameBootstrap.cs` | Runs at game start. Creates ServerWorld + ClientWorld and turns on auto-connect (port 7979). |
-| `GoInGameClientSystem.cs` | Client: once connected, marks itself "in game" and sends `GoInGameRequest` to the server. Also defines `GoInGameRequest`. |
-| `GoInGameServerSystem.cs` | Server: receives `GoInGameRequest`, marks that client "in game". From then on it sends the client the game. |
+| `GoInGameClientSystem.cs` | Client: once connected and My Sub Scene has loaded, marks itself "in game" and sends `GoInGameRequest` to the server. Also defines `GoInGameRequest`. |
+| `GoInGameServerSystem.cs` | Server: receives `GoInGameRequest`, marks that client "in game" and spawns their main character (a ghost they own). From then on it sends the client the game. |
 
 ## How to test
 
@@ -38,7 +38,11 @@
         ◄─────────── GoInGameRequest (RPC) ──────── send
  GoInGameServerSystem:
    + NetworkStreamInGame (server side)
+   spawn main character, GhostOwner = NetworkId
         ──────────── snapshots, every tick ───────────► ghosts appear / update
+                                                 (your character: predicted,
+                                                  GhostOwnerIsLocal enabled)
+        ◄─────────── input (CharacterInput), every tick ─ CharacterInputSystem
 ```
 
 Connected is not enough. **The server only sends ghosts to connections that have `NetworkStreamInGame`.** That's why "go in game" exists.
@@ -131,14 +135,20 @@ Ghost Authoring settings that matter first:
 | Default Ghost Mode: **Interpolated** | NPCs, zombies, things nobody controls |
 | Default Ghost Mode: **Owner Predicted** + **Has Owner** | Player characters: predicted for the owner, interpolated for everyone else |
 
-### 4. Players (not set up yet, names to know)
+### 4. Players
 
-| Name | What |
-|---|---|
-| `GhostOwner` | Component on a ghost: `NetworkId` of the connection that owns it |
-| `GhostOwnerIsLocal` | Enabled only on the client that owns the ghost. Query with it to find "my" player. |
-| `IInputComponentData` | Input component. Client writes it, netcode sends it to the server every tick. |
-| `PredictedSimulationSystemGroup` | Where movement goes for predicted ghosts. Runs on the server, and on clients for the ghosts they predict. |
+How the units work (spawning, input, control switching): `Assets/Scripts/README.md`.
+
+| Name | What | Used in |
+|---|---|---|
+| `GhostOwner` | Component on a ghost: `NetworkId` of the connection that owns it | Set when spawning (`GoInGameServerSystem`) |
+| `GhostOwnerIsLocal` | Enabled only on the client that owns the ghost. Query with it to find "my" units. Not for use inside prediction. | `CharacterInputSystem`, `CharacterVisual`, `UnitSwitchMenu` |
+| `IInputComponentData` | Input component. Client writes it, netcode sends it to the server every tick. | `CharacterInput` |
+| `InputEvent` | One-shot button inside an input component. `Set()` on the client, `IsSet` true for exactly one tick. | jump, dash |
+| `PredictedSimulationSystemGroup` | Where movement goes for predicted ghosts. Runs on the server, and on clients for the ghosts they predict. May replay old ticks. | `CharacterMoverSystem` (in its fixed-step subgroup) |
+| `Simulate` | Enabled on the entities to simulate in the current prediction tick. Add `WithAll<Simulate>` to prediction queries. | `CharacterMoverJob` |
+| `[GhostEnabledBit]` | Syncs an enableable component's on/off state from the server. | `ControlledByPlayer` |
+| `LinkedEntityGroup` on the connection | Entities added to it are destroyed when that player disconnects. | Characters, summons |
 
 ## What's networked right now
 
@@ -147,17 +157,19 @@ Ghost Authoring settings that matter first:
 | Connect + go in game | ✅ this folder |
 | Zombies | ✅ ghosts (`BaseUnit` has Ghost Authoring), spawned server-only (`ZombieSpawnerSystem` has the `ServerSimulation` filter) |
 | Soldiers + 2 zombies in the subscene | ✅ pre-spawned ghosts |
-| Player (`PlayerECS` in My Sub Scene) | ❌ not a ghost. Exists in **both** worlds, each moves its own copy from the same keyboard. |
-| Y Bot | Follows the **ServerWorld** player. `PlayerVisualSync` uses `DefaultGameObjectInjectionWorld`, which is the first world created (ServerWorld). |
+| Player characters (`PlayerECS` prefab) | ✅ owner-predicted ghosts. `GoInGameServerSystem` spawns one per player, owned by them. Input goes to the server as `CharacterInput`, movement is predicted (`CharacterMoverSystem`) |
+| Summons / other units | ✅ same setup (any prefab with `ControllableAuthoring`). The server decides which unit each player controls (`ControlSwitchSystem`). Test with F1/F2 (`DebugSummonSystems`) |
+| Visuals (Y Bot) | ✅ one per unit, spawned in **ClientWorld** by `CharacterVisualSystem`. The camera follows the unit you control |
 | Course systems (move, shoot, target, health bar) | ❌ no filter, so they run in both worlds. The client runs its own copy of the gameplay. Snapshots overwrite ghost positions, but e.g. bullets are spawned separately on both sides. `Health` has no `[GhostField]`, so client health comes from the client's own copy of the fight, not from the server. |
 | `ZombieSpawner.prefab` | Has Ghost Authoring but doesn't need it (only the server reads spawners) and isn't used by the scene. Remove it. |
 
 ## Next steps, in order
 
-1. **Player as a ghost.** `PlayerECS.prefab` with Ghost Authoring (Owner Predicted, Has Owner). Remove the player from the subscene. `GoInGameServerSystem` instantiates one per connection and sets `GhostOwner`.
-2. **Networked input.** `PlayerInputData` becomes an `IInputComponentData`. `PlayerMoverSystem` moves into `PredictedSimulationSystemGroup`.
-3. **Y Bot follows your own player.** `PlayerVisualSync` reads `ClientWorld` and finds the player with `GhostOwnerIsLocal`.
+1. ✅ **Player as a ghost.** `GoInGameServerSystem` spawns `PlayerECS` (Owner Predicted, Has Owner) per connection and sets `GhostOwner`.
+2. ✅ **Networked input.** `CharacterInput` is an `IInputComponentData`. `CharacterMoverSystem` runs in the prediction loop.
+3. ✅ **Visuals follow your own units.** `CharacterVisualSystem` spawns visuals in `ClientWorld`. `GhostOwnerIsLocal` + `ControlledByPlayer` pick the one the camera follows.
 4. **Server-only gameplay.** Your own copies of the course systems with `ServerSimulation`, plus `[GhostField]` on data clients must show (health).
+5. **Character select.** Send the chosen index in `GoInGameRequest`, and spawn `characterPrefabs[index]` instead of `[0]`.
 
 Official tutorial doing steps 1–2 with a cube: **"Networked Cube"**, in the package docs at `Library/PackageCache/com.unity.netcode@*/Documentation~/networked-cube.md`.
 
@@ -166,5 +178,5 @@ Official tutorial doing steps 1–2 with a cube: **"Networked Cube"**, in the pa
 | Warning | Meaning |
 |---|---|
 | `Server Tick Batching has occurred...` | The editor can't run 60 server ticks/s with two worlds, so it runs 2 ticks in one frame to catch up. Editor noise unless constant. Keep Burst on. |
-| `[ClientWorld] The default physics world contains N dynamic physics objects which are not ghosts` | The player has a Rigidbody but isn't a ghost. Goes away after step 1. |
+| `[ClientWorld] The default physics world contains N dynamic physics objects which are not ghosts` | Something with a Rigidbody isn't a ghost. Every unit prefab needs Ghost Authoring, and the old `PlayerECS` placed in My Sub Scene must be deleted (players are spawned now). |
 | `Failed to initialize predicted spawned ghost` | The client `Instantiate`d a ghost prefab. Spawn ghosts on the server only. |
