@@ -15,6 +15,11 @@ public class PlayerContext
     // Move direction relative to the body, for the LowerBody layer's strafe blend tree
     public static readonly int VelocityXHash = Animator.StringToHash("VelocityX");
     public static readonly int VelocityZHash = Animator.StringToHash("VelocityZ");
+    // Air jumps (2nd, 3rd...): airJump when still steering the way the character faces, airJumpTurn when changing direction
+    public static readonly int AirJumpHash = Animator.StringToHash("airJump");
+    public static readonly int AirJumpTurnHash = Animator.StringToHash("airJumpTurn");
+    // Tag on the Air Jump and Air Jump Turn states in the Animator (state Inspector > Tag)
+    public const string AirJumpTag = "AirJump";
 
     private readonly PlayerConfig _config;
     private readonly Transform _transform;
@@ -31,6 +36,8 @@ public class PlayerContext
 
     private Vector3 _horizontalVelocity;
     private float _verticalVelocity;
+    // 0 while on the ground, then counts up in the air (for coyote time)
+    private float _timeSinceGrounded;
 
     public PlayerContext(PlayerConfig config, Transform transform, CharacterController characterController,
         Animator animator, Transform cameraTransform, GameObject crosshair)
@@ -67,12 +74,19 @@ public class PlayerContext
     // IsPressed follows the key itself, even though Interact has a Hold interaction
     public bool IsAimPressed => _aimAction.IsPressed();
     public bool WasJumpPressed => _jumpAction.WasPressedThisFrame();
+    // Move input as a direction on the ground (length 0 to 1), relative to the camera
+    public Vector3 MoveDirection => GetMoveDirection();
 
     // ---------- Movement ----------
 
     public bool IsGrounded => _characterController.isGrounded;
     // Up is positive. Negative while falling (and slightly negative while standing, to stay on the ground).
     public float VerticalVelocity => _verticalVelocity;
+    // On the ground, or walked off a ledge less than Coyote Time ago: Jump is still a normal ground jump
+    public bool CanGroundJump => _timeSinceGrounded <= _config.CoyoteTime;
+    // Whether a grounded state may start a jump: from the ground, or during a fall when air jumps exist
+    // (the fall then counts as the first jump)
+    public bool CanJump => CanGroundJump || _config.MaxJumps > 1;
 
     // Speeds up or slows down toward the move input at this speed, applies gravity, and moves the character.
     // Call it once per frame from a state's UpdateState. Speed 0 slows down to a stop.
@@ -95,18 +109,21 @@ public class PlayerContext
 
         Vector3 velocity = _horizontalVelocity + Vector3.up * _verticalVelocity;
         _characterController.Move(velocity * Time.deltaTime);
+
+        _timeSinceGrounded = _characterController.isGrounded ? 0f : _timeSinceGrounded + Time.deltaTime;
     }
 
-    // Starts a jump. Move() then carries the character up, and gravity brings it back down.
-    public void Jump()
+    // Starts a jump this high. Move() then carries the character up, and gravity brings it back down.
+    // Also works in the air (air jumps): it replaces the current up/down speed.
+    public void Jump(float height)
     {
-        _verticalVelocity = Mathf.Sqrt(_config.JumpHeight * -2f * _config.Gravity);
+        _verticalVelocity = Mathf.Sqrt(height * -2f * _config.Gravity);
     }
 
     // Turns toward where the move input points. Does nothing without input.
     public void FaceMoveDirection()
     {
-        TurnTowards(GetMoveDirection());
+        FaceDirection(GetMoveDirection());
     }
 
     // Turns toward where the camera looks (used while aiming)
@@ -116,10 +133,11 @@ public class PlayerContext
         {
             return;
         }
-        TurnTowards(Quaternion.Euler(0f, _cameraTransform.eulerAngles.y, 0f) * Vector3.forward);
+        FaceDirection(Quaternion.Euler(0f, _cameraTransform.eulerAngles.y, 0f) * Vector3.forward);
     }
 
-    private void TurnTowards(Vector3 direction)
+    // Turns toward this direction at Turn Speed. Does nothing for a zero direction.
+    public void FaceDirection(Vector3 direction)
     {
         if (direction.sqrMagnitude < 0.0001f)
         {
@@ -180,6 +198,21 @@ public class PlayerContext
         localVelocity = Vector3.ClampMagnitude(localVelocity, 1f);
         _animator.SetFloat(VelocityXHash, localVelocity.x, _config.VelocityDampTime, Time.deltaTime);
         _animator.SetFloat(VelocityZHash, localVelocity.z, _config.VelocityDampTime, Time.deltaTime);
+    }
+
+    // True while the Base Layer plays a state tagged "AirJump" and its clip hasn't finished yet,
+    // including the short blend into it. Follows each clip's own length (Running Jump 0.9 s, Front Twist Flip 2.2 s).
+    public bool IsPlayingAirJump
+    {
+        get
+        {
+            if (_animator.IsInTransition(0) && _animator.GetNextAnimatorStateInfo(0).IsTag(AirJumpTag))
+            {
+                return true;
+            }
+            AnimatorStateInfo current = _animator.GetCurrentAnimatorStateInfo(0);
+            return current.IsTag(AirJumpTag) && current.normalizedTime < 1f;
+        }
     }
 
     public void SetCrosshairVisible(bool visible)

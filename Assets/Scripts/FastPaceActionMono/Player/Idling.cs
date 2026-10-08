@@ -13,7 +13,7 @@ public class Idling : PlayerState
 
     public override EPlayerState GetNextState()
     {
-        if (Context.WasJumpPressed && Context.IsGrounded) return EPlayerState.Jumping;
+        if (Context.WasJumpPressed && Context.CanJump) return EPlayerState.Jumping;
         if (Context.IsAimPressed) return EPlayerState.Aiming;
         if (Context.IsCrouchPressed) return EPlayerState.Crouching;
         if (Context.IsMovePressed) return Context.IsSprintPressed ? EPlayerState.Running : EPlayerState.Walking;

@@ -30,7 +30,7 @@ public class Aiming : PlayerState
 
     public override EPlayerState GetNextState()
     {
-        if (Context.WasJumpPressed && Context.IsGrounded) return EPlayerState.Jumping;
+        if (Context.WasJumpPressed && Context.CanJump) return EPlayerState.Jumping;
         if (Context.IsAimPressed) return StateKey;
         if (Context.IsCrouchPressed) return EPlayerState.Crouching;
         if (!Context.IsMovePressed) return EPlayerState.Idling;
